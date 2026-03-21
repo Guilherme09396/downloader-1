@@ -138,17 +138,29 @@ router.post("/search", async (req, res) => {
     const results = await ytDlp(`ytsearch5:${query}`, {
       dumpSingleJson: true,
       noWarnings: true,
-      noCallHome: true,
+
+      // ❌ removido (deprecated)
+      // noCallHome: true,
+
+      // 🔥 evita bloqueio
+      extractorArgs: "youtube:player_client=android",
+
+      addHeader: [
+        "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "accept-language: en-US,en;q=0.9",
+      ],
     });
 
-    const tracks = results.entries.map((item) => ({
-      id: item.id,
-      title: item.title,
-      artist: item.uploader,
-      duration: item.duration,
-      thumbnail: item.thumbnail,
-      url: item.webpage_url,
-    }));
+    const tracks = results.entries
+      .filter(Boolean) // 🔥 remove nulls (muito importante)
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        artist: item.uploader,
+        duration: item.duration,
+        thumbnail: item.thumbnail,
+        url: item.webpage_url,
+      }));
 
     searchCache.set(query, {
       data: tracks,
@@ -156,9 +168,37 @@ router.post("/search", async (req, res) => {
     });
 
     res.json(tracks);
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err });
+    console.error("Erro na busca principal:", err.message);
+
+    // 🔥 FALLBACK (ULTRA IMPORTANTE)
+    try {
+      const fallback = await ytDlp(`ytsearch3:${query}`, {
+        dumpSingleJson: true,
+        noWarnings: true,
+      });
+
+      const tracks = fallback.entries
+        .filter(Boolean)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          artist: item.uploader,
+          duration: item.duration,
+          thumbnail: item.thumbnail,
+          url: item.webpage_url,
+        }));
+
+      return res.json(tracks);
+
+    } catch (err2) {
+      console.error("Erro no fallback:", err2.message);
+
+      return res.status(500).json({
+        error: "Erro ao buscar músicas",
+      });
+    }
   }
 });
 
