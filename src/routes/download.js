@@ -10,7 +10,8 @@ const axiosInstance = axios.create({
   timeout: 20000,
 });
 
-// cache de URL de áudio por vídeo
+const streamCache = new Map();
+const STREAM_TTL = 1000 * 60 * 10;
 
 const MAX_CACHE_SIZE = 100;
 
@@ -20,31 +21,25 @@ function enforceCacheLimit() {
     streamCache.delete(firstKey);
   }
 }
-const STREAM_TTL = 1000 * 60 * 10; // 10 minutos
 
 function getCachedStream(url) {
   const item = streamCache.get(url);
   if (!item) return null;
+
   if (Date.now() > item.expire) {
     streamCache.delete(url);
     return null;
   }
+
   return item.audioUrl;
 }
 
-const MAX_CACHE = 100; // limite de itens no cache
-
 function setCachedStream(url, audioUrl) {
-  // 🔥 remove o mais antigo se passar do limite
-  if (streamCache.size >= MAX_CACHE) {
-    const firstKey = streamCache.keys().next().value;
-    streamCache.delete(firstKey);
-  }
-
   streamCache.set(url, {
     audioUrl,
     expire: Date.now() + STREAM_TTL,
   });
+
   enforceCacheLimit();
 }
 
