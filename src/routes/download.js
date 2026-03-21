@@ -170,10 +170,16 @@ router.get("/stream", async (req, res) => {
 
     if (!audioUrl) {
       const result = await ytDlp.exec(url, {
-        format: "bestaudio[ext=webm]/bestaudio",
+        format: "bestaudio",
         getUrl: true,
         noWarnings: true,
-        noCallHome: true,
+
+        extractorArgs: "youtube:player_client=android",
+
+        addHeader: [
+          "user-agent: Mozilla/5.0",
+          "accept-language: en-US,en;q=0.9"
+        ]
       });
 
       audioUrl = result.stdout.trim();
