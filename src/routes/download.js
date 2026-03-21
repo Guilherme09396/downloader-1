@@ -165,28 +165,24 @@ router.get("/stream", async (req, res) => {
 
     const range = req.headers.range;
 
-    // tenta pegar do cache
-    let audioUrl = getCachedStream(url);
+    // 🔥 Formato robusto com fallback
+    const result = await ytDlp.exec(url, {
+      format: "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+      getUrl: true,
+      noWarnings: true,
 
-    if (!audioUrl) {
-      const result = await ytDlp.exec(url, {
-        format: "bestaudio",
-        getUrl: true,
-        noWarnings: true,
+      // 🔥 ajuda a evitar bloqueio do YouTube
+      extractorArgs: "youtube:player_client=android",
 
-        extractorArgs: "youtube:player_client=android",
+      addHeader: [
+        "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "accept-language: en-US,en;q=0.9",
+      ],
+    });
 
-        addHeader: [
-          "user-agent: Mozilla/5.0",
-          "accept-language: en-US,en;q=0.9"
-        ]
-      });
+    const audioUrl = result.stdout.trim();
 
-      audioUrl = result.stdout.trim();
-      setCachedStream(url, audioUrl);
-    }
-
-    const audioStream = await axiosInstance({
+    const audioStream = await axios({
       method: "GET",
       url: audioUrl,
       responseType: "stream",
@@ -208,7 +204,11 @@ router.get("/stream", async (req, res) => {
     audioStream.data.pipe(res);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err });
+
+    res.status(500).json({
+      error: "Erro ao streamar áudio",
+      details: err.stderr || err.message,
+    });
   }
 });
 
