@@ -7,7 +7,7 @@ const https = require("https");
 const axiosInstance = axios.create({
   httpAgent: new http.Agent({ keepAlive: true }),
   httpsAgent: new https.Agent({ keepAlive: true }),
-  timeout: 20000,
+  timeout: 30000,
 });
 
 // cache de URL de áudio por vídeo
@@ -34,6 +34,18 @@ function setCachedStream(url, audioUrl) {
 const searchCache = new Map();
 const SEARCH_TTL = 1000 * 60 * 5; // 5 minutos
 
+// Opções padrão do yt-dlp para evitar bloqueios
+const YT_DLP_BASE_OPTS = {
+  noWarnings: true,
+  noCallHome: true,
+  noCheckCertificate: true,
+  extractorArgs: "youtube:player_client=android",
+  addHeader: [
+    "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "accept-language: en-US,en;q=0.9",
+  ],
+};
+
 const router = express.Router();
 
 router.get("/", (req, res) => {
@@ -45,9 +57,7 @@ router.get("/download", async (req, res) => {
     const { url, title } = req.query;
 
     if (!url) {
-      return res.status(400).json({
-        error: "URL não fornecida",
-      });
+      return res.status(400).json({ error: "URL não fornecida" });
     }
 
     const filename = title ? `${title}.mp3` : "music.mp3";
@@ -55,27 +65,18 @@ router.get("/download", async (req, res) => {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${encodeURIComponent(filename)}"`,
+      `attachment; filename="${encodeURIComponent(filename)}"`
     );
 
     const stream = ytDlp.exec(url, {
+      ...YT_DLP_BASE_OPTS,
       extractAudio: true,
       audioFormat: "mp3",
-
-      // 🔥 adiciona metadata
+      audioQuality: 0,
       embedMetadata: true,
-
-      // 🔥 adiciona capa
       embedThumbnail: true,
-
-      // baixa thumbnail
       writeThumbnail: true,
-
-      // envia para stdout
       output: "-",
-
-      noWarnings: true,
-      noCallHome: true,
     });
 
     stream.stdout.pipe(res);
@@ -83,11 +84,14 @@ router.get("/download", async (req, res) => {
     stream.stderr.on("data", (data) => {
       console.log(data.toString());
     });
-  } catch (error) {
-    console.log(error);
-    res.status(500).json({
-      error: "Erro no download",
+
+    stream.on("error", (err) => {
+      console.error("Download error:", err);
+      if (!res.headersSent) res.status(500).json({ error: "Erro no download" });
     });
+  } catch (error) {
+    console.error(error);
+    if (!res.headersSent) res.status(500).json({ error: "Erro no download" });
   }
 });
 
@@ -96,9 +100,8 @@ router.post("/info", async (req, res) => {
 
   try {
     const info = await ytDlp(url, {
+      ...YT_DLP_BASE_OPTS,
       dumpSingleJson: true,
-      noWarnings: true,
-      noCallHome: true,
     });
 
     res.json({
@@ -107,6 +110,7 @@ router.post("/info", async (req, res) => {
       artist: info.uploader,
       duration: info.duration,
       thumbnail: info.thumbnail,
+      url: info.webpage_url,
     });
   } catch (err) {
     res.status(500).json({ error: "Erro ao buscar vídeo" });
@@ -121,16 +125,14 @@ router.post("/search", async (req, res) => {
   }
 
   const cached = searchCache.get(query);
-
   if (cached && Date.now() < cached.expire) {
     return res.json(cached.data);
   }
 
   try {
     const results = await ytDlp(`ytsearch5:${query}`, {
+      ...YT_DLP_BASE_OPTS,
       dumpSingleJson: true,
-      noWarnings: true,
-      noCallHome: true,
     });
 
     const tracks = results.entries.map((item) => ({
@@ -154,7 +156,7 @@ router.post("/search", async (req, res) => {
   }
 });
 
-// Rota de STREAMING (para o player de áudio — sem Content-Disposition: attachment)
+// Rota de STREAMING com cache de URL de áudio
 router.get("/stream", async (req, res) => {
   try {
     const { url } = req.query;
@@ -165,31 +167,36 @@ router.get("/stream", async (req, res) => {
 
     const range = req.headers.range;
 
-    // 🔥 Formato robusto com fallback
-    const result = await ytDlp.exec(url, {
-      format: "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
-      getUrl: true,
-      noWarnings: true,
+    // 🔥 Usa cache para evitar chamar yt-dlp toda vez
+    let audioUrl = getCachedStream(url);
 
-      // 🔥 ajuda a evitar bloqueio do YouTube
-      extractorArgs: "youtube:player_client=android",
+    if (!audioUrl) {
+      const result = await ytDlp.exec(url, {
+        ...YT_DLP_BASE_OPTS,
+        format: "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
+        getUrl: true,
+      });
 
-      addHeader: [
-        "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "accept-language: en-US,en;q=0.9",
-      ],
-    });
+      audioUrl = result.stdout.trim();
 
-    const audioUrl = result.stdout.trim();
+      if (!audioUrl) {
+        return res.status(500).json({ error: "Não foi possível obter URL de áudio" });
+      }
 
-    const audioStream = await axios({
+      setCachedStream(url, audioUrl);
+    }
+
+    const audioStream = await axiosInstance({
       method: "GET",
       url: audioUrl,
       responseType: "stream",
       headers: range ? { Range: range } : {},
     });
 
-    res.setHeader("Content-Type", "audio/webm");
+    const status = audioStream.status === 206 ? 206 : 200;
+    res.status(status);
+
+    res.setHeader("Content-Type", audioStream.headers["content-type"] || "audio/webm");
     res.setHeader("Accept-Ranges", "bytes");
 
     if (audioStream.headers["content-length"]) {
@@ -198,17 +205,27 @@ router.get("/stream", async (req, res) => {
 
     if (audioStream.headers["content-range"]) {
       res.setHeader("Content-Range", audioStream.headers["content-range"]);
-      res.status(206);
     }
 
     audioStream.data.pipe(res);
+
+    audioStream.data.on("error", (err) => {
+      console.error("Stream pipe error:", err);
+      // Invalida cache se o stream falhar
+      streamCache.delete(url);
+    });
   } catch (err) {
     console.error(err);
 
-    res.status(500).json({
-      error: "Erro ao streamar áudio",
-      details: err.stderr || err.message,
-    });
+    // Se a URL em cache falhou (expirou no YouTube), limpa e retorna erro
+    streamCache.delete(req.query.url);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Erro ao streamar áudio",
+        details: err.stderr || err.message,
+      });
+    }
   }
 });
 
