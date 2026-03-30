@@ -5,7 +5,10 @@
     "main": "index.js",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1",
-        "start": "node src/server.js"
+        "start": "node src/server.js",
+        "scripts": {
+            "postinstall": "node_modules/yt-dlp-exec/bin/yt-dlp -U"
+        }
     },
     "keywords": [],
     "author": "",

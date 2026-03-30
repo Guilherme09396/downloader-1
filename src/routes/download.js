@@ -290,4 +290,57 @@ router.get("/stream", async (req, res) => {
   }
 });
 
+// =======================
+// DEBUG (remova após investigar)
+// =======================
+router.get("/debug", async (req, res) => {
+  const fs = require("fs");
+  const { execSync } = require("child_process");
+
+  const results = {};
+
+  // Versão do yt-dlp
+  try {
+    results.ytdlpVersion = execSync(
+      "/app/node_modules/yt-dlp-exec/bin/yt-dlp --version"
+    ).toString().trim();
+  } catch (e) {
+    results.ytdlpVersion = "erro: " + e.message;
+  }
+
+  // cookies.txt existe?
+  try {
+    const stat = fs.statSync(COOKIES_PATH);
+    results.cookiesExists = true;
+    results.cookiesSize = stat.size + " bytes";
+    results.cookiesModified = stat.mtime;
+    // primeiras 3 linhas (sem expor dados sensíveis)
+    const lines = fs.readFileSync(COOKIES_PATH, "utf8").split("\n").slice(0, 3);
+    results.cookiesFirstLines = lines;
+  } catch (e) {
+    results.cookiesExists = false;
+    results.cookiesError = e.message;
+  }
+
+  // list-formats do vídeo problemático
+  try {
+    const { execFileSync } = require("child_process");
+    const output = execFileSync(
+      "/app/node_modules/yt-dlp-exec/bin/yt-dlp",
+      [
+        "https://www.youtube.com/watch?v=jK2k1P56Cno",
+        "--list-formats",
+        "--no-check-certificate",
+        "--cookies", COOKIES_PATH,
+      ],
+      { encoding: "utf8", timeout: 30000 }
+    );
+    results.formats = output;
+  } catch (e) {
+    results.formatsError = e.stderr || e.message;
+  }
+
+  res.json(results);
+});
+
 module.exports = router;
