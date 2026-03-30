@@ -55,7 +55,6 @@ const BASE_HEADERS = [
   "accept-language: en-US,en;q=0.9",
 ];
 
-// Estratégias com cookies — resolve o "Sign in to confirm you're not a bot"
 const YT_DLP_STRATEGIES = [
   {
     noWarnings: true,
@@ -101,13 +100,13 @@ async function preFetchAudioUrl(youtubeUrl) {
     const result = await runYtDlpWithFallback((opts) =>
       ytDlp(youtubeUrl, {
         ...opts,
-        format: "bestaudio[ext=webm]/bestaudio/best",
+        format: "bestaudio/best", // ✅ corrigido
         getUrl: true,
       })
     );
     const audioUrl = result.trim();
     if (audioUrl) setCachedStream(youtubeUrl, audioUrl);
-  } catch (_) {}
+  } catch (_) { }
 }
 
 // =======================
@@ -134,27 +133,27 @@ router.get("/download", async (req, res) => {
     const tmpDir = path.join(os.tmpdir(), `music-dl-${tmpId}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    await ytDlp(url, {
-      noWarnings: true,
-      noCheckCertificate: true,
-      cookies: COOKIES_PATH,
-      addHeader: BASE_HEADERS,
-      format: "bestaudio/best",
-      extractAudio: true,
-      audioFormat: "mp3",
-      audioQuality: 0,
-      addMetadata: true,
-      embedThumbnail: true,
-      convertThumbnails: "jpg",
-      postprocessorArgs: "ffmpeg:-id3v2_version 3",
-      output: path.join(tmpDir, "audio.%(ext)s"),
-    });
+    // ✅ agora usa runYtDlpWithFallback com cookies e estratégias
+    await runYtDlpWithFallback((opts) =>
+      ytDlp(url, {
+        ...opts,
+        format: "bestaudio/best",
+        extractAudio: true,
+        audioFormat: "mp3",
+        audioQuality: 0,
+        addMetadata: true,
+        embedThumbnail: true,
+        convertThumbnails: "jpg",
+        postprocessorArgs: "ffmpeg:-id3v2_version 3",
+        output: path.join(tmpDir, "audio.%(ext)s"),
+      })
+    );
 
     const files = fs.readdirSync(tmpDir);
     const mp3File = files.find((f) => f.endsWith(".mp3"));
 
     if (!mp3File) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { }
       return res.status(500).json({ error: "Arquivo MP3 não encontrado após conversão" });
     }
 
@@ -167,10 +166,10 @@ router.get("/download", async (req, res) => {
 
     const readStream = fs.createReadStream(mp3Path);
     readStream.pipe(res);
-    readStream.on("end", () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {} });
+    readStream.on("end", () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { } });
     readStream.on("error", (err) => {
       console.error("Read stream error:", err);
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { }
       if (!res.headersSent) res.status(500).json({ error: "Erro ao ler arquivo" });
     });
   } catch (error) {
@@ -220,7 +219,7 @@ router.post("/search", async (req, res) => {
     );
 
     const tracks = results.entries
-      .filter(Boolean) // ignora entradas null
+      .filter(Boolean)
       .map((item) => ({
         id: item.id,
         title: item.title,
@@ -252,7 +251,11 @@ router.get("/stream", async (req, res) => {
 
     if (!audioUrl) {
       const result = await runYtDlpWithFallback((opts) =>
-        ytDlp(url, { ...opts, format: "bestaudio[ext=webm]/bestaudio/best", getUrl: true })
+        ytDlp(url, {
+          ...opts,
+          format: "bestaudio/best", // ✅ corrigido
+          getUrl: true,
+        })
       );
       audioUrl = result.trim();
       if (!audioUrl) return res.status(500).json({ error: "Não foi possível obter URL de áudio" });
