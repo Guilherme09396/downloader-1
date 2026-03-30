@@ -55,6 +55,10 @@ const BASE_HEADERS = [
   "accept-language: en-US,en;q=0.9",
 ];
 
+// Formatos de áudio em ordem de preferência (IDs diretos — evita problema do DASH)
+// 251=opus 141k, 140=m4a 129k, 249=opus 55k, 139=m4a 49k, 18=mp4 360p (tem áudio)
+const AUDIO_FORMAT_PREFERENCE = "251/140/249/139/18";
+
 const YT_DLP_STRATEGIES = [
   {
     noWarnings: true,
@@ -100,11 +104,12 @@ async function preFetchAudioUrl(youtubeUrl) {
     const result = await runYtDlpWithFallback((opts) =>
       ytDlp(youtubeUrl, {
         ...opts,
-        format: "bestaudio/best", // ✅ corrigido
+        format: AUDIO_FORMAT_PREFERENCE,
         getUrl: true,
       })
     );
-    const audioUrl = result.trim();
+    // getUrl pode retornar múltiplas linhas em DASH — pega só a primeira (áudio)
+    const audioUrl = result.trim().split("\n")[0];
     if (audioUrl) setCachedStream(youtubeUrl, audioUrl);
   } catch (_) { }
 }
@@ -114,6 +119,53 @@ async function preFetchAudioUrl(youtubeUrl) {
 // =======================
 router.get("/", (req, res) => {
   return res.send("API funcionando 🚀");
+});
+
+// =======================
+// DEBUG (remova após confirmar que está funcionando)
+// =======================
+router.get("/debug", async (req, res) => {
+  const fs = require("fs");
+  const { execSync, execFileSync } = require("child_process");
+  const results = {};
+
+  try {
+    results.ytdlpVersion = execSync(
+      "/app/node_modules/yt-dlp-exec/bin/yt-dlp --version"
+    ).toString().trim();
+  } catch (e) {
+    results.ytdlpVersion = "erro: " + e.message;
+  }
+
+  try {
+    const stat = fs.statSync(COOKIES_PATH);
+    results.cookiesExists = true;
+    results.cookiesSize = stat.size + " bytes";
+    results.cookiesModified = stat.mtime;
+    const lines = fs.readFileSync(COOKIES_PATH, "utf8").split("\n").slice(0, 3);
+    results.cookiesFirstLines = lines;
+  } catch (e) {
+    results.cookiesExists = false;
+    results.cookiesError = e.message;
+  }
+
+  try {
+    const output = execFileSync(
+      "/app/node_modules/yt-dlp-exec/bin/yt-dlp",
+      [
+        "https://www.youtube.com/watch?v=jK2k1P56Cno",
+        "--list-formats",
+        "--no-check-certificate",
+        "--cookies", COOKIES_PATH,
+      ],
+      { encoding: "utf8", timeout: 30000 }
+    );
+    results.formats = output;
+  } catch (e) {
+    results.formatsError = e.stderr || e.message;
+  }
+
+  res.json(results);
 });
 
 // =======================
@@ -133,11 +185,10 @@ router.get("/download", async (req, res) => {
     const tmpDir = path.join(os.tmpdir(), `music-dl-${tmpId}`);
     fs.mkdirSync(tmpDir, { recursive: true });
 
-    // ✅ agora usa runYtDlpWithFallback com cookies e estratégias
     await runYtDlpWithFallback((opts) =>
       ytDlp(url, {
         ...opts,
-        format: "bestaudio/best",
+        format: AUDIO_FORMAT_PREFERENCE,
         extractAudio: true,
         audioFormat: "mp3",
         audioQuality: 0,
@@ -253,11 +304,12 @@ router.get("/stream", async (req, res) => {
       const result = await runYtDlpWithFallback((opts) =>
         ytDlp(url, {
           ...opts,
-          format: "bestaudio/best", // ✅ corrigido
+          format: AUDIO_FORMAT_PREFERENCE,
           getUrl: true,
         })
       );
-      audioUrl = result.trim();
+      // pega só a primeira linha (evita problema de DASH retornar 2 URLs)
+      audioUrl = result.trim().split("\n")[0];
       if (!audioUrl) return res.status(500).json({ error: "Não foi possível obter URL de áudio" });
       setCachedStream(url, audioUrl);
     }
@@ -288,59 +340,6 @@ router.get("/stream", async (req, res) => {
     if (!res.headersSent)
       res.status(500).json({ error: "Erro ao streamar áudio", details: err.stderr || err.message });
   }
-});
-
-// =======================
-// DEBUG (remova após investigar)
-// =======================
-router.get("/debug", async (req, res) => {
-  const fs = require("fs");
-  const { execSync } = require("child_process");
-
-  const results = {};
-
-  // Versão do yt-dlp
-  try {
-    results.ytdlpVersion = execSync(
-      "/app/node_modules/yt-dlp-exec/bin/yt-dlp --version"
-    ).toString().trim();
-  } catch (e) {
-    results.ytdlpVersion = "erro: " + e.message;
-  }
-
-  // cookies.txt existe?
-  try {
-    const stat = fs.statSync(COOKIES_PATH);
-    results.cookiesExists = true;
-    results.cookiesSize = stat.size + " bytes";
-    results.cookiesModified = stat.mtime;
-    // primeiras 3 linhas (sem expor dados sensíveis)
-    const lines = fs.readFileSync(COOKIES_PATH, "utf8").split("\n").slice(0, 3);
-    results.cookiesFirstLines = lines;
-  } catch (e) {
-    results.cookiesExists = false;
-    results.cookiesError = e.message;
-  }
-
-  // list-formats do vídeo problemático
-  try {
-    const { execFileSync } = require("child_process");
-    const output = execFileSync(
-      "/app/node_modules/yt-dlp-exec/bin/yt-dlp",
-      [
-        "https://www.youtube.com/watch?v=jK2k1P56Cno",
-        "--list-formats",
-        "--no-check-certificate",
-        "--cookies", COOKIES_PATH,
-      ],
-      { encoding: "utf8", timeout: 30000 }
-    );
-    results.formats = output;
-  } catch (e) {
-    results.formatsError = e.stderr || e.message;
-  }
-
-  res.json(results);
 });
 
 module.exports = router;
