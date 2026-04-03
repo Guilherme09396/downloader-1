@@ -57,7 +57,8 @@ const BASE_HEADERS = [
 
 // Formatos de áudio em ordem de preferência (IDs diretos — evita problema do DASH)
 // 251=opus 141k, 140=m4a 129k, 249=opus 55k, 139=m4a 49k, 18=mp4 360p (tem áudio)
-const AUDIO_FORMAT_PREFERENCE = "251/140/249/139/18";
+const AUDIO_FORMAT_PREFERENCE = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best";
+
 
 const YT_DLP_STRATEGIES = [
   {
