@@ -65,7 +65,14 @@ const YT_DLP_STRATEGIES = [
     noWarnings: true,
     noCheckCertificate: true,
     cookies: COOKIES_PATH,
-    extractorArgs: "youtube:player_client=web",
+    extractorArgs: "youtube:player_client=ios",
+    addHeader: BASE_HEADERS,
+  },
+  {
+    noWarnings: true,
+    noCheckCertificate: true,
+    cookies: COOKIES_PATH,
+    extractorArgs: "youtube:player_client=android",
     addHeader: BASE_HEADERS,
   },
   {
@@ -73,12 +80,6 @@ const YT_DLP_STRATEGIES = [
     noCheckCertificate: true,
     cookies: COOKIES_PATH,
     extractorArgs: "youtube:player_client=tv_embedded",
-    addHeader: BASE_HEADERS,
-  },
-  {
-    noWarnings: true,
-    noCheckCertificate: true,
-    cookies: COOKIES_PATH,
     addHeader: BASE_HEADERS,
   },
 ];
@@ -267,7 +268,7 @@ router.post("/search", async (req, res) => {
 
   try {
     const results = await runYtDlpWithFallback((opts) =>
-      ytDlp(`ytsearch5:${query}`, { ...opts, dumpSingleJson: true })
+      ytDlp(`ytsearch5:${query}`, { ...opts, dumpSingleJson: true, flatPlaylist: true })
     );
 
     const tracks = results.entries
