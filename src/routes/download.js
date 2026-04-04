@@ -57,7 +57,8 @@ const BASE_HEADERS = [
 
 // Formatos de áudio em ordem de preferência (IDs diretos — evita problema do DASH)
 // 251=opus 141k, 140=m4a 129k, 249=opus 55k, 139=m4a 49k, 18=mp4 360p (tem áudio)
-const AUDIO_FORMAT_PREFERENCE = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best";
+const AUDIO_FORMAT_PREFERENCE = "bestaudio/best";
+
 
 
 const YT_DLP_STRATEGIES = [
@@ -268,7 +269,7 @@ router.post("/search", async (req, res) => {
 
   try {
     const results = await runYtDlpWithFallback((opts) =>
-      ytDlp(`ytsearch5:${query}`, { ...opts, dumpSingleJson: true, flatPlaylist: true })
+      ytDlp(`ytsearch5:${query}`, { ...opts, dumpSingleJson: true })
     );
 
     const tracks = results.entries
@@ -279,7 +280,7 @@ router.post("/search", async (req, res) => {
         artist: item.uploader,
         duration: item.duration,
         thumbnail: item.thumbnail,
-        url: item.webpage_url,
+        url: item.webpage_url || `https://www.youtube.com/watch?v=${item.id}`,
       }));
 
     searchCache.set(query, { data: tracks, expire: Date.now() + SEARCH_TTL });
