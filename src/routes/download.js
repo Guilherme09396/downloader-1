@@ -134,7 +134,7 @@ router.get("/stream", async (req, res) => {
     });
 
     res.setHeader("Content-Type", "audio/mpeg");
-    response.data.pipe(res);
+    res.redirect(audioUrl);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "erro stream" });
