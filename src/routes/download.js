@@ -1,235 +1,72 @@
 const express = require("express");
-const ytDlp = require("yt-dlp-exec");
 const axios = require("axios");
-const http = require("http");
-const https = require("https");
-const path = require("path");
 
 const router = express.Router();
 
 // =======================
-// COOKIES PATH
-// =======================
-const COOKIES_PATH = path.join(__dirname, "../../cookies.txt");
-
-// =======================
-// AXIOS CONFIG
-// =======================
-const axiosInstance = axios.create({
-  httpAgent: new http.Agent({ keepAlive: true, maxSockets: 10 }),
-  httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 10 }),
-  timeout: 15000,
-});
-
-// =======================
-// CACHE STREAM (1h)
+// CACHE
 // =======================
 const streamCache = new Map();
-const STREAM_TTL = 1000 * 60 * 60;
-
-function getCachedStream(url) {
-  const item = streamCache.get(url);
-  if (!item) return null;
-  if (Date.now() > item.expire) {
-    streamCache.delete(url);
-    return null;
-  }
-  return item.audioUrl;
-}
-
-function setCachedStream(url, audioUrl) {
-  streamCache.set(url, { audioUrl, expire: Date.now() + STREAM_TTL });
-}
+let CLIENT_ID_CACHE = null;
 
 // =======================
-// CACHE SEARCH (30min)
+// HELPERS
 // =======================
-const searchCache = new Map();
-const SEARCH_TTL = 1000 * 60 * 30;
 
-// =======================
-// CONFIG YT-DLP
-// =======================
-const BASE_HEADERS = [
-  "user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-  "accept-language: en-US,en;q=0.9",
-];
+async function resolveClientId() {
+  if (process.env.SOUNDCLOUD_CLIENT_ID) return process.env.SOUNDCLOUD_CLIENT_ID;
+  if (CLIENT_ID_CACHE) return CLIENT_ID_CACHE;
 
-// Formatos de áudio em ordem de preferência (IDs diretos — evita problema do DASH)
-// 251=opus 141k, 140=m4a 129k, 249=opus 55k, 139=m4a 49k, 18=mp4 360p (tem áudio)
-const AUDIO_FORMAT_PREFERENCE = "bestaudio/best";
+  const { data: html } = await axios.get("https://soundcloud.com");
 
+  const scripts = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/.*?\.js)"/g)]
+    .map(m => m[1]);
 
-
-const YT_DLP_STRATEGIES = [
-  {
-    noWarnings: true,
-    noCheckCertificate: true,
-    cookies: COOKIES_PATH,
-    extractorArgs: "youtube:player_client=ios",
-    addHeader: BASE_HEADERS,
-  },
-  {
-    noWarnings: true,
-    noCheckCertificate: true,
-    cookies: COOKIES_PATH,
-    extractorArgs: "youtube:player_client=android",
-    addHeader: BASE_HEADERS,
-  },
-  {
-    noWarnings: true,
-    noCheckCertificate: true,
-    cookies: COOKIES_PATH,
-    extractorArgs: "youtube:player_client=tv_embedded",
-    addHeader: BASE_HEADERS,
-  },
-];
-
-async function runYtDlpWithFallback(fn) {
-  let lastError;
-  for (const opts of YT_DLP_STRATEGIES) {
+  for (const url of scripts) {
     try {
-      return await fn(opts);
-    } catch (err) {
-      lastError = err;
-      console.warn("⚠️ Estratégia falhou, tentando próxima...");
-    }
+      const { data: js } = await axios.get(url);
+      const match = js.match(/client_id:"([a-zA-Z0-9]+)"/);
+      if (match) {
+        CLIENT_ID_CACHE = match[1];
+        console.log("🔥 SoundCloud client_id carregado:", CLIENT_ID_CACHE);
+        return CLIENT_ID_CACHE;
+      }
+    } catch (_) { }
   }
-  throw lastError;
+
+  throw new Error("Erro ao obter client_id");
+}
+
+function normalizeTrack(t) {
+  return {
+    id: t.id,
+    title: t.title,
+    artist: t.user?.username || "Unknown",
+    duration: Math.floor(t.duration / 1000),
+    thumbnail: t.artwork_url || t.user?.avatar_url,
+    url: t.permalink_url,
+    _raw: t,
+  };
 }
 
 // =======================
-// PRE-FETCH CACHE
+// SEARCH
 // =======================
-async function preFetchAudioUrl(youtubeUrl) {
-  if (getCachedStream(youtubeUrl)) return;
+router.post("/search", async (req, res) => {
   try {
-    const result = await runYtDlpWithFallback((opts) =>
-      ytDlp(youtubeUrl, {
-        ...opts,
-        format: AUDIO_FORMAT_PREFERENCE,
-        getUrl: true,
-      })
-    );
-    // getUrl pode retornar múltiplas linhas em DASH — pega só a primeira (áudio)
-    const audioUrl = result.trim().split("\n")[0];
-    if (audioUrl) setCachedStream(youtubeUrl, audioUrl);
-  } catch (_) { }
-}
+    const { query } = req.body;
+    if (!query) return res.status(400).json({ error: "query obrigatória" });
 
-// =======================
-// TEST
-// =======================
-router.get("/", (req, res) => {
-  return res.send("API funcionando 🚀");
-});
+    const clientId = await resolveClientId();
 
-// =======================
-// DEBUG (remova após confirmar que está funcionando)
-// =======================
-router.get("/debug", async (req, res) => {
-  const fs = require("fs");
-  const { execSync, execFileSync } = require("child_process");
-  const results = {};
-
-  try {
-    results.ytdlpVersion = execSync(
-      "/app/node_modules/yt-dlp-exec/bin/yt-dlp --version"
-    ).toString().trim();
-  } catch (e) {
-    results.ytdlpVersion = "erro: " + e.message;
-  }
-
-  try {
-    const stat = fs.statSync(COOKIES_PATH);
-    results.cookiesExists = true;
-    results.cookiesSize = stat.size + " bytes";
-    results.cookiesModified = stat.mtime;
-    const lines = fs.readFileSync(COOKIES_PATH, "utf8").split("\n").slice(0, 3);
-    results.cookiesFirstLines = lines;
-  } catch (e) {
-    results.cookiesExists = false;
-    results.cookiesError = e.message;
-  }
-
-  try {
-    const output = execFileSync(
-      "/app/node_modules/yt-dlp-exec/bin/yt-dlp",
-      [
-        "https://www.youtube.com/watch?v=jK2k1P56Cno",
-        "--list-formats",
-        "--no-check-certificate",
-        "--cookies", COOKIES_PATH,
-      ],
-      { encoding: "utf8", timeout: 30000 }
-    );
-    results.formats = output;
-  } catch (e) {
-    results.formatsError = e.stderr || e.message;
-  }
-
-  res.json(results);
-});
-
-// =======================
-// DOWNLOAD
-// =======================
-router.get("/download", async (req, res) => {
-  const fs = require("fs");
-  const os = require("os");
-  const crypto = require("crypto");
-
-  try {
-    const { url, title } = req.query;
-    if (!url) return res.status(400).json({ error: "URL não fornecida" });
-
-    const filename = title ? `${title}.mp3` : "music.mp3";
-    const tmpId = crypto.randomBytes(8).toString("hex");
-    const tmpDir = path.join(os.tmpdir(), `music-dl-${tmpId}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-
-    await runYtDlpWithFallback((opts) =>
-      ytDlp(url, {
-        ...opts,
-        format: AUDIO_FORMAT_PREFERENCE,
-        extractAudio: true,
-        audioFormat: "mp3",
-        audioQuality: 0,
-        addMetadata: true,
-        embedThumbnail: true,
-        convertThumbnails: "jpg",
-        postprocessorArgs: "ffmpeg:-id3v2_version 3",
-        output: path.join(tmpDir, "audio.%(ext)s"),
-      })
-    );
-
-    const files = fs.readdirSync(tmpDir);
-    const mp3File = files.find((f) => f.endsWith(".mp3"));
-
-    if (!mp3File) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { }
-      return res.status(500).json({ error: "Arquivo MP3 não encontrado após conversão" });
-    }
-
-    const mp3Path = path.join(tmpDir, mp3File);
-    const stat = fs.statSync(mp3Path);
-
-    res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Length", stat.size);
-    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
-
-    const readStream = fs.createReadStream(mp3Path);
-    readStream.pipe(res);
-    readStream.on("end", () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { } });
-    readStream.on("error", (err) => {
-      console.error("Read stream error:", err);
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { }
-      if (!res.headersSent) res.status(500).json({ error: "Erro ao ler arquivo" });
+    const { data } = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
+      params: { q: query, client_id: clientId, limit: 20 },
     });
-  } catch (error) {
-    console.error("Download error:", error);
-    if (!res.headersSent)
-      res.status(500).json({ error: "Erro no download", details: error.stderr || error.message });
+
+    res.json(data.collection.map(normalizeTrack));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "erro search soundcloud" });
   }
 });
 
@@ -237,58 +74,20 @@ router.get("/download", async (req, res) => {
 // INFO
 // =======================
 router.post("/info", async (req, res) => {
-  const { url } = req.body;
   try {
-    const info = await runYtDlpWithFallback((opts) =>
-      ytDlp(url, { ...opts, dumpSingleJson: true })
-    );
-    preFetchAudioUrl(url);
-    res.json({
-      id: info.id,
-      title: info.title,
-      artist: info.uploader,
-      duration: info.duration,
-      thumbnail: info.thumbnail,
-      url: info.webpage_url,
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: "url obrigatória" });
+
+    const clientId = await resolveClientId();
+
+    const { data } = await axios.get("https://api-v2.soundcloud.com/resolve", {
+      params: { url, client_id: clientId },
     });
+
+    res.json(normalizeTrack(data));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erro ao buscar vídeo", details: err.stderr || err.message });
-  }
-});
-
-// =======================
-// SEARCH
-// =======================
-router.post("/search", async (req, res) => {
-  const { query } = req.body;
-  if (!query) return res.status(400).json({ error: "É necessário informar o query" });
-
-  const cached = searchCache.get(query);
-  if (cached && Date.now() < cached.expire) return res.json(cached.data);
-
-  try {
-    const results = await runYtDlpWithFallback((opts) =>
-      ytDlp(`ytsearch5:${query}`, { ...opts, dumpSingleJson: true })
-    );
-
-    const tracks = results.entries
-      .filter(Boolean)
-      .map((item) => ({
-        id: item.id,
-        title: item.title,
-        artist: item.uploader,
-        duration: item.duration,
-        thumbnail: item.thumbnail,
-        url: item.webpage_url || `https://www.youtube.com/watch?v=${item.id}`,
-      }));
-
-    searchCache.set(query, { data: tracks, expire: Date.now() + SEARCH_TTL });
-    tracks.slice(0, 3).forEach((t) => preFetchAudioUrl(t.url));
-    res.json(tracks);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro na busca", details: err.stderr || err.message });
+    res.status(500).json({ error: "erro info" });
   }
 });
 
@@ -298,50 +97,92 @@ router.post("/search", async (req, res) => {
 router.get("/stream", async (req, res) => {
   try {
     const { url } = req.query;
-    if (!url) return res.status(400).json({ error: "URL não fornecida" });
+    if (!url) return res.status(400).json({ error: "url obrigatória" });
 
-    const range = req.headers.range;
-    let audioUrl = getCachedStream(url);
+    const clientId = await resolveClientId();
+
+    let audioUrl = streamCache.get(url);
 
     if (!audioUrl) {
-      const result = await runYtDlpWithFallback((opts) =>
-        ytDlp(url, {
-          ...opts,
-          format: AUDIO_FORMAT_PREFERENCE,
-          getUrl: true,
-        })
+      const { data } = await axios.get("https://api-v2.soundcloud.com/resolve", {
+        params: { url, client_id: clientId },
+      });
+
+      if (!data.media?.transcodings) {
+        return res.status(404).json({ error: "stream não encontrado" });
+      }
+
+      const progressive = data.media.transcodings.find(
+        t => t.format.protocol === "progressive"
       );
-      // pega só a primeira linha (evita problema de DASH retornar 2 URLs)
-      audioUrl = result.trim().split("\n")[0];
-      if (!audioUrl) return res.status(500).json({ error: "Não foi possível obter URL de áudio" });
-      setCachedStream(url, audioUrl);
+
+      if (!progressive) return res.status(404).json({ error: "sem stream progressivo" });
+
+      const streamRes = await axios.get(progressive.url, {
+        params: { client_id: clientId },
+      });
+
+      audioUrl = streamRes.data.url;
+      streamCache.set(url, audioUrl);
     }
 
-    const audioStream = await axiosInstance({
+    const response = await axios({
       method: "GET",
       url: audioUrl,
       responseType: "stream",
-      headers: range ? { Range: range } : {},
+      headers: { "User-Agent": "Mozilla/5.0" },
     });
 
-    res.status(audioStream.status === 206 ? 206 : 200);
-    res.setHeader("Content-Type", audioStream.headers["content-type"] || "audio/webm");
-    res.setHeader("Accept-Ranges", "bytes");
-    if (audioStream.headers["content-length"])
-      res.setHeader("Content-Length", audioStream.headers["content-length"]);
-    if (audioStream.headers["content-range"])
-      res.setHeader("Content-Range", audioStream.headers["content-range"]);
-
-    audioStream.data.pipe(res);
-    audioStream.data.on("error", (err) => {
-      console.error("Stream pipe error:", err);
-      streamCache.delete(url);
-    });
+    res.setHeader("Content-Type", "audio/mpeg");
+    response.data.pipe(res);
   } catch (err) {
     console.error(err);
-    streamCache.delete(req.query.url);
-    if (!res.headersSent)
-      res.status(500).json({ error: "Erro ao streamar áudio", details: err.stderr || err.message });
+    res.status(500).json({ error: "erro stream" });
+  }
+});
+
+// =======================
+// DOWNLOAD
+// =======================
+router.get("/download", async (req, res) => {
+  try {
+    const { url, title } = req.query;
+    if (!url) return res.status(400).json({ error: "url obrigatória" });
+
+    const clientId = await resolveClientId();
+
+    const { data } = await axios.get("https://api-v2.soundcloud.com/resolve", {
+      params: { url, client_id: clientId },
+    });
+
+    const progressive = data.media.transcodings.find(
+      t => t.format.protocol === "progressive"
+    );
+
+    if (!progressive) return res.status(404).json({ error: "sem stream progressivo" });
+
+    const streamRes = await axios.get(progressive.url, {
+      params: { client_id: clientId },
+    });
+
+    const audioUrl = streamRes.data.url;
+
+    const fileRes = await axios({
+      method: "GET",
+      url: audioUrl,
+      responseType: "stream",
+    });
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${(title || data.title).replace(/[^a-z0-9]/gi, "_")}.mp3"`
+    );
+
+    fileRes.data.pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "erro download" });
   }
 });
 
