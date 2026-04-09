@@ -186,4 +186,39 @@ router.get("/download", async (req, res) => {
   }
 });
 
+// =======================
+// OFFLINE URL (retorna URL direta do áudio)
+// =======================
+router.get("/offline-url", async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: "url obrigatória" });
+
+    const clientId = await resolveClientId();
+
+    const { data } = await axios.get("https://api-v2.soundcloud.com/resolve", {
+      params: { url, client_id: clientId },
+    });
+
+    if (!data.media?.transcodings) {
+      return res.status(404).json({ error: "stream não encontrado" });
+    }
+
+    const progressive = data.media.transcodings.find(
+      t => t.format.protocol === "progressive"
+    );
+
+    if (!progressive) return res.status(404).json({ error: "sem stream progressivo" });
+
+    const streamRes = await axios.get(progressive.url, {
+      params: { client_id: clientId },
+    });
+
+    res.json({ audioUrl: streamRes.data.url });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "erro offline-url" });
+  }
+});
+
 module.exports = router;
