@@ -134,7 +134,8 @@ router.get("/stream", async (req, res) => {
     });
 
     res.setHeader("Content-Type", "audio/mpeg");
-    res.redirect(audioUrl);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.redirect(audioUrl);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "erro stream" });
@@ -171,6 +172,11 @@ router.get("/download", async (req, res) => {
       method: "GET",
       url: audioUrl,
       responseType: "stream",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://soundcloud.com/",
+        "Origin": "https://soundcloud.com",
+      },
     });
 
     res.setHeader("Content-Type", "audio/mpeg");
@@ -212,6 +218,10 @@ router.get("/offline-url", async (req, res) => {
 
     const streamRes = await axios.get(progressive.url, {
       params: { client_id: clientId },
+      headers: {
+        "Referer": "https://soundcloud.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
     });
 
     res.json({ audioUrl: streamRes.data.url });
