@@ -1,168 +1,89 @@
-// test-stream.js
-// node test-stream.js
+// node test-invidious.js
+
 const axios = require("axios");
 
-// =======================
-// SOUNDCLOUD
-// =======================
-async function getSoundCloudClientId() {
-  const { data: html } = await axios.get("https://soundcloud.com");
-  const jsUrls = [...html.matchAll(/src="(https:\/\/a-v2\.sndcdn\.com\/assets\/.+?\.js)"/g)]
-    .map(m => m[1]);
-
-  for (const url of jsUrls) {
-    try {
-      const { data: js } = await axios.get(url);
-      const match = js.match(/client_id:"([a-zA-Z0-9]+)"/);
-      if (match) return match[1];
-    } catch { }
-  }
-  throw new Error("Não conseguiu obter client_id do SoundCloud");
-}
-
-async function soundcloudSearch(query, client_id) {
-  const { data } = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
-    params: { q: query, client_id, limit: 5 },
-  });
-  return data.collection;
-}
-
-async function soundcloudStream(track, client_id) {
-  const transcoding = track.media?.transcodings?.find(
-    t => t.format.protocol === "progressive"
-  );
-  if (!transcoding) throw new Error("Sem áudio progressivo no SoundCloud");
-  const { data } = await axios.get(transcoding.url, { params: { client_id } });
-  return data.url;
-}
-
-// =======================
-// INVIDIOUS (ROBUSTO)
-// =======================
-const INVIDIOUS_INSTANCES = [
+// lista de instâncias (fallback automático)
+const INSTANCES = [
+  "https://invidious.snopyta.org",
   "https://inv.nadeko.net",
-  "https://invidious.private.coffee",
-  "https://yewtu.be",
-  "https://vid.puffyan.us",
-  "https://inv.tux.pizza"
+  "https://invidious.privacydev.net",
+  "https://yewtu.be"
 ];
 
-const BASE_HEADERS = {
-  "user-agent": "Mozilla/5.0",
-  "accept-language": "en-US,en;q=0.9",
-};
-
-// Função helper com retry
-async function fetchWithRetry(url, options = {}, retries = 3) {
-  for (let i = 0; i < retries; i++) {
+// tenta buscar em várias instâncias
+async function searchInvidious(query) {
+  for (const base of INSTANCES) {
     try {
-      return await axios.get(url, {
-        timeout: 7000,
-        headers: BASE_HEADERS,
-        ...options,
-      });
-    } catch (err) {
-      if (i === retries - 1) throw err;
-    }
-  }
-}
+      console.log(`🔍 Tentando: ${base}`);
 
-// =======================
-// SEARCH
-// =======================
-async function invidiousSearch(query) {
-  for (const base of INVIDIOUS_INSTANCES) {
-    try {
-      const { data } = await fetchWithRetry(`${base}/api/v1/search`, {
-        params: {
-          q: query,
-          type: "video",
-          region: "BR"
-        },
-      });
+      const { data } = await axios.get(
+        `${base}/api/v1/search?q=${encodeURIComponent(query)}&type=video`,
+        { timeout: 8000 }
+      );
 
-      if (Array.isArray(data) && data.length > 0) {
-        console.log(`✅ Invidious SEARCH OK: ${base}`);
+      if (data && data.length > 0) {
+        console.log(`✅ Funcionou com: ${base}`);
         return data;
       }
-
     } catch (err) {
-      console.warn(`⚠️ SEARCH falhou em ${base}`);
+      console.log(`❌ Falhou: ${base}`);
     }
   }
 
-  throw new Error("Nenhuma instância respondeu (search)");
+  throw new Error("Nenhuma instância funcionou");
 }
 
-// =======================
-// STREAM
-// =======================
-async function invidiousStream(videoId) {
-  for (const base of INVIDIOUS_INSTANCES) {
+// pegar stream de áudio
+async function getAudio(videoId) {
+  for (const base of INSTANCES) {
     try {
-      const { data } = await fetchWithRetry(`${base}/api/v1/videos/${videoId}`);
+      const { data } = await axios.get(
+        `${base}/api/v1/videos/${videoId}`,
+        { timeout: 8000 }
+      );
 
-      // 🔥 PRIORIDADE: áudio-only
-      const audio = data.adaptiveFormats
-        ?.filter(f => f.type?.includes("audio"))
-        ?.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+      const audio = data.adaptiveFormats.find(f =>
+        f.type.includes("audio")
+      );
 
-      if (audio?.url) {
-        console.log(`✅ AUDIO OK: ${base}`);
-        return audio.url;
+      if (audio) {
+        return {
+          url: audio.url,
+          bitrate: audio.bitrate,
+        };
       }
-
-      // 🔥 fallback: qualquer formato com áudio
-      const withAudio = data.formatStreams
-        ?.find(f => f.url && f.mimeType?.includes("audio"));
-
-      if (withAudio?.url) {
-        console.log(`✅ FALLBACK OK: ${base}`);
-        return withAudio.url;
-      }
-
-    } catch (err) {
-      console.warn(`⚠️ STREAM falhou em ${base}`);
-    }
+    } catch (err) { }
   }
 
-  throw new Error("Nenhuma instância conseguiu stream");
+  return null;
 }
 
-// =======================
-// TESTE
-// =======================
+// ================= TESTE =================
+
 (async () => {
-  const QUERY = "ceu azul";
-
-  console.log("\n======= TESTE SOUNDCLOUD =======");
   try {
-    console.log("🔎 Pegando client_id...");
-    const client_id = await getSoundCloudClientId();
-    console.log("✅ client_id:", client_id);
+    const query = "poesia 6";
 
-    console.log("🔎 Buscando:", QUERY);
-    const tracks = await soundcloudSearch(QUERY, client_id);
-    const first = tracks[0];
-    console.log("🎵 Resultado:", first.title, "-", first.user?.username);
+    const results = await searchInvidious(query);
 
-    const streamUrl = await soundcloudStream(first, client_id);
-    console.log("🎧 Stream URL (SoundCloud):", streamUrl.substring(0, 80) + "...");
+    console.log("\n🎵 RESULTADOS:");
+    const first = results[0];
+
+    console.log({
+      title: first.title,
+      videoId: first.videoId,
+      author: first.author,
+    });
+
+    const audio = await getAudio(first.videoId);
+
+    console.log("\n🔊 AUDIO:");
+    console.log(audio);
+
+    console.log("\n▶️ URL para teste:");
+    console.log(audio?.url);
+
   } catch (err) {
-    console.error("❌ SoundCloud falhou:", err.message);
-  }
-
-  console.log("\n======= TESTE INVIDIOUS (YouTube) =======");
-  try {
-    console.log("🔎 Buscando:", QUERY);
-    const videos = await invidiousSearch(QUERY);
-    const first = videos[0];
-    console.log("🎵 Resultado:", first.title, "-", first.author);
-    console.log("🆔 Video ID:", first.videoId);
-
-    const streamUrl = await invidiousStream(first.videoId);
-    console.log("🎧 Stream URL (Invidious):", streamUrl.substring(0, 80) + "...");
-  } catch (err) {
-    console.error("❌ Invidious falhou:", err.message);
+    console.error("Erro:", err.message);
   }
 })();

@@ -101,43 +101,52 @@ router.get("/stream", async (req, res) => {
 
     const clientId = await resolveClientId();
 
-    let audioUrl = streamCache.get(url);
-
-    if (!audioUrl) {
-      const { data } = await axios.get("https://api-v2.soundcloud.com/resolve", {
+    // NÃO usar cache do áudio final
+    const { data } = await axios.get(
+      "https://api-v2.soundcloud.com/resolve",
+      {
         params: { url, client_id: clientId },
-      });
-
-      if (!data.media?.transcodings) {
-        return res.status(404).json({ error: "stream não encontrado" });
       }
+    );
 
-      const progressive = data.media.transcodings.find(
-        t => t.format.protocol === "progressive"
-      );
+    const progressive = data.media?.transcodings?.find(
+      (t) => t.format.protocol === "progressive"
+    );
 
-      if (!progressive) return res.status(404).json({ error: "sem stream progressivo" });
-
-      const streamRes = await axios.get(progressive.url, {
-        params: { client_id: clientId },
-      });
-
-      audioUrl = streamRes.data.url;
-      streamCache.set(url, audioUrl);
+    if (!progressive) {
+      return res.status(404).json({ error: "sem stream progressivo" });
     }
 
-    const response = await axios({
+    const streamRes = await axios.get(progressive.url, {
+      params: { client_id: clientId },
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Referer: "https://soundcloud.com/",
+        Origin: "https://soundcloud.com",
+      },
+    });
+
+    const audioUrl = streamRes.data.url;
+
+    // 🔥 STREAM REAL (sem redirect)
+    const audioStream = await axios({
       method: "GET",
       url: audioUrl,
       responseType: "stream",
-      headers: { "User-Agent": "Mozilla/5.0" },
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Referer: "https://soundcloud.com/",
+        Origin: "https://soundcloud.com",
+      },
     });
 
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.redirect(audioUrl);
+
+    audioStream.data.pipe(res);
+
   } catch (err) {
-    console.error(err);
+    console.error(err.response?.status, err.message);
     res.status(500).json({ error: "erro stream" });
   }
 });
