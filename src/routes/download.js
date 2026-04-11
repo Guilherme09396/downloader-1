@@ -101,7 +101,9 @@ router.get("/stream", async (req, res) => {
 
     const clientId = await resolveClientId();
 
-    // NÃO usar cache do áudio final
+    // =======================
+    // RESOLVE TRACK
+    // =======================
     const { data } = await axios.get(
       "https://api-v2.soundcloud.com/resolve",
       {
@@ -128,21 +130,53 @@ router.get("/stream", async (req, res) => {
 
     const audioUrl = streamRes.data.url;
 
-    // 🔥 STREAM REAL (sem redirect)
+    // =======================
+    // RANGE SUPPORT (SEEK)
+    // =======================
+    const range = req.headers.range;
+
+    const headers = {
+      "User-Agent": "Mozilla/5.0",
+      Referer: "https://soundcloud.com/",
+      Origin: "https://soundcloud.com",
+    };
+
+    if (range) {
+      headers.Range = range; // 🔥 ESSENCIAL
+    }
+
     const audioStream = await axios({
       method: "GET",
       url: audioUrl,
       responseType: "stream",
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        Referer: "https://soundcloud.com/",
-        Origin: "https://soundcloud.com",
-      },
+      headers,
+      validateStatus: () => true, // aceita 206
     });
 
-    res.setHeader("Content-Type", "audio/mpeg");
+    // =======================
+    // HEADERS IMPORTANTES
+    // =======================
+    const contentType = audioStream.headers["content-type"] || "audio/mpeg";
+    const contentLength = audioStream.headers["content-length"];
+    const contentRange = audioStream.headers["content-range"];
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+
+    if (contentRange) {
+      res.status(206);
+      res.setHeader("Content-Range", contentRange);
+    }
+
+    if (contentLength) {
+      res.setHeader("Content-Length", contentLength);
+    }
+
     res.setHeader("Access-Control-Allow-Origin", "*");
 
+    // =======================
+    // PIPE
+    // =======================
     audioStream.data.pipe(res);
 
   } catch (err) {
